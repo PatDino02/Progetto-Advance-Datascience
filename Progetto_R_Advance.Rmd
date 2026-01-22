@@ -1,0 +1,1243 @@
+---
+title: "Progetto"
+author: "Patrick Di Noto Marrella, 158007"
+date: "2025-12-19"
+output: html_document
+---
+
+```{r}
+library(readr) 
+library(igraph)
+library(ggraph)
+library(tidygraph)
+library(dplyr)
+library(visNetwork)
+library(htmlwidgets)
+library(cluster)
+library(factoextra)
+library(ggplot2)
+```
+
+# DESCRIZIONE DATASET
+
+Il dataset è stato scaricato da Kaggle con nome "Flights and Airports Data"
+
+airports.csv - Dataset degli aeroporti domestici USA contenente 358 aeroporti (riguardanti i primi 6 mesi da Gennaio a Giugno) con le seguenti informazioni:
+
+airport_id: identificativo univoco dell'aeroporto
+  name: nome ufficiale dell'aeroporto (es. "Hartsfield-Jackson Atlanta International")
+  city: città in cui si trova l'aeroporto
+  state: stato USA (codice a 2 lettere)
+  
+flights.csv - Dataset dei voli commerciali domestici USA. Ogni riga rappresenta un volo effettivo con:
+
+  OriginAirportID: ID dell'aeroporto di origine
+  DestAirportID: ID dell'aeroporto di destinazione
+  Altri campi relativi al volo (giorno del mese, giorno della settimana, aereoporto origine, aereoporto destinazione, ritardi)
+  
+
+## SINTESI DEL PROGETTO
+
+Questo progetto analizza la rete aerea domestica degli Stati Uniti attraverso tecniche di **network analysis** e **data mining**, utilizzando un dataset Kaggle di oltre 2.5 milioni di voli commerciali e 358 aeroporti distribuiti nei primi 6 mesi dell'anno (Gennaio-Giugno). L'analisi si articola in quattro macro-aree principali:
+
+**1. Analisi Topologica della Rete**: Utilizzando metriche di centralità (Degree, PageRank, Betweenness, Power Centrality), sono stati identificati gli hub critici del sistema aereo nazionale. Denver, Atlanta e Dallas emergono come aeroporti strategicamente insostituibili per la loro elevata **Betweenness Centrality**, fungendo da ponti obbligati per i collegamenti transcontinentali Est-Ovest. La visualizzazione interattiva con `visNetwork` consente l'esplorazione dinamica delle 1,478+ rotte più trafficate, evidenziando la struttura **scale-free** della rete dove pochi mega-hub concentrano la maggior parte del traffico.
+
+**2. Analisi Pattern di Ritardi**: L'indagine sui ritardi alla partenza rivela pattern temporali ricorrenti fortemente correlati con fattori operativi e stagionali. Chicago (O'Hare e Midway) domina la classifica degli aeroporti problematici con ritardi medi di 16 minuti e il 30% dei voli oltre 15 minuti di ritardo, attribuibili a meteo difficile (neve da effetto lago), congestione cronica e infrastrutture obsolete. L'**analisi settimanale** dimostra che il venerdì registra il picco di ritardi per sovrapposizione di traffico business e leisure, mentre il sabato emerge come giorno più puntuale grazie al volume ridotto del 22% e alla minor congestione aeroportuale. L'**analisi mensile** rivela un ciclo operativo con picco al giorno 10 e miglioramento progressivo verso fine mese.
+
+**3. Clustering Aeroporti per Efficienza Operativa**: Applicando **K-means clustering** (k=3 ottimale via metodo Silhouette) su 9 feature di puntualità standardizzate, sono emersi tre profili distinti: (1) **Cluster 1 "Mediamente Efficienti"** (34 aeroporti Costa Est/città medie, ritardo medio 9.4 min), (2) **Cluster 2 "Aeroporti Puntuali"** (21 aeroporti regionali/Costa Ovest, ritardo medio 6.5 min, SD=31 min - più prevedibili), (3) **Cluster 3 "Mega-Hub Congestionati"** (15 hub nazionali come Atlanta/Dallas/Denver, ritardo medio 13.3 min, 14% ritardi gravi ma miglior recupero in volo 4.7 min). L'analisi PCA conferma la netta separazione dei cluster, evidenziando il **trade-off connettività-puntualità**: i mega-hub soffrono congestione sistemica ma compensano con strategie di time recovery aggressive durante il volo.
+
+**4. Robustezza della Rete agli Attacchi Mirati**: Implementando strategie di percolazione su 5 metriche di centralità diverse (Degree, PageRank, Betweenness statico/adattivo, Power Centrality), l'analisi dimostra che la rete aerea USA è una **rete scale-free robusta-ma-fragile**. La sovrapposizione iniziale delle curve (0-20 rimozioni) conferma l'alta ridondanza: rimuovere i primi 15-20 hub principali ha impatto limitato grazie a percorsi alternativi. Tuttavia, superata la **soglia critica** di ~25-30 nodi (35-40% della rete), il **Betweenness Adattivo** emerge come strategia più distruttiva, frammentando rapidamente la rete perché ricalcola dinamicamente i nuovi ponti critici ad ogni rimozione. Questo conferma che Denver, Atlanta e Dallas sono **nodi insostituibili** la cui compromissione simultanea causerebbe il collasso della connettività transcontinentale.
+
+
+```{r}
+
+airports = read.csv("c:/Users/Patrick/Desktop/Progetto_Advance/dataset/airports.csv")
+flights = read.csv("c:/Users/Patrick/Desktop/Progetto_Advance/dataset/flights.csv")
+
+```
+
+```{r}
+cat("Aeroporti:", nrow(airports), "\n")
+cat("Voli:", nrow(flights), "\n")
+cat("Colonne flights:\n")
+print(colnames(flights))
+print(head(flights, 3))
+```
+
+# Visualizzazione interattiva del grafo.
+
+## Preparazione di tutte le componenti.
+### Come prima cosa ho convertito in character la feature airport_id (integer) siccome la funzione graph_from_data_frame() crea nodi con essa. 
+Successivamente ho raggruppato i voli per coppia (origine-destinazione), ho contato quanti voli ci sono per ogni rotta e ordinati per numero di voli (decrescente) (non tengo conto dei diversi giorni in cui è avvenuto un volo). 
+Al TERZO punto ho eliminato i voli i cui aereoporti di destinazione o origine non esistevano in airports.cvs(dati inconsistenti).
+Al QUARTO punto ho selezionato solo le rotte più trafficate, ossia le tratte con il numero maggiore di voli, per poi crearmi il grafo e, siccome alcuni campi potrebbero essere NA (valori mancanti) li sostituisco con valori di default. 
+Ed infine vado a "preparare" gli archi e i nodi per essere usati nel grafo interattivo
+
+Nel grafo non vengono visti tutti gli aereoporti per una questione di visualizzazione, ossia si tiene conto delle rotte più importanti (numero di voli > di 1478) e non di quelle secondarie. 
+
+
+```{r}
+
+airports$airport_id <- as.character(airports$airport_id)
+
+# AGGREGA VOLI PER ROTTA
+routes <- flights %>%
+  group_by(OriginAirportID, DestAirportID) %>%
+  summarise(n_flights = n(), .groups = "drop") %>%
+  arrange(desc(n_flights))
+
+# FILTRA SOLO AEROPORTI CHE ESISTONO NEL DATASET
+valid_airports <- airports$airport_id
+routes_clean <- routes %>%
+  filter(as.character(OriginAirportID) %in% valid_airports & 
+         as.character(DestAirportID) %in% valid_airports)
+
+
+# Vedi la distribuzione, per capire quale valore mettere come filtro (75 quantile), catturo probabilmente ~75-80% del traffico con solo ~25% delle rotte
+summary(routes_clean$n_flights)
+quantile(routes_clean$n_flights, c(0.5, 0.75, 0.9, 0.95, 0.99))
+
+# Filtro per tenere conto solo delle rotte con più del 75 quantile 
+routes_filtered <- routes_clean %>% 
+  filter(n_flights > 1478) 
+
+# CREA GRAFO
+g <- graph_from_data_frame(
+  d = routes_filtered  %>% 
+    mutate(from = as.character(OriginAirportID),
+           to = as.character(DestAirportID)) %>%
+    select(from, to, n_flights),
+  directed = TRUE
+)
+
+
+# CREA LOOKUP per info aeroporti
+airport_info <- airports %>%
+  select(airport_id, name, city, state) %>%
+  mutate(
+    city = ifelse(is.na(city), "Unknown", city),
+    name = ifelse(is.na(name), paste("Airport", airport_id), name),
+    state = ifelse(is.na(state), "N/A", state)
+  )
+# CALCOLA DEGREE (numero di connessioni per ogni nodo)
+degrees <- degree(g, mode = "all")
+
+# PREPARA NODI
+graph_airports <- data.frame(airport_id = V(g)$name, stringsAsFactors = FALSE) %>%
+  left_join(airport_info, by = "airport_id")
+
+nodes_df <- data.frame(
+  airport_id = V(g)$name,
+  stringsAsFactors = FALSE
+) %>%
+  left_join(airport_info, by = "airport_id") %>%
+  mutate(
+    city = ifelse(is.na(city), paste("ID", airport_id), city),
+    name = ifelse(is.na(name), paste("Airport", airport_id), name),
+    state = ifelse(is.na(state), "Unknown", state),
+    degree_val = degrees[airport_id]  
+  ) %>%
+  filter(!is.na(airport_id))
+
+
+# 8. CREA NODI FINALE
+nodes <- data.frame(
+  id = nodes_df$airport_id,
+  label = nodes_df$city,
+  title = paste0(
+    "<b>", nodes_df$name, "</b><br>",
+    "City: ", nodes_df$city, ", ", nodes_df$state, "<br>",
+    "Connections: ", nodes_df$degree_val
+  ),
+  value = nodes_df$degree_val,  
+  group = nodes_df$state,
+  stringsAsFactors = FALSE,
+  row.names = NULL
+)
+
+# PREPARA ARCHI
+edges <- routes_filtered  %>%
+  mutate(
+    from = as.character(OriginAirportID),
+    to = as.character(DestAirportID),
+    width = sqrt(n_flights) / 10, #lo spessore l'ho messo come radice quadrata del numero di voli / 10
+    title = paste(n_flights, "voli"),
+    arrows = "to"
+  ) %>%
+  select(from, to, width, title, arrows)
+
+# VISUALIZZAZIONE INTERATTIVA
+vis_graph <- visNetwork(nodes, edges, width = "100%", height = "800px") %>%
+  #stile nodi
+  visNodes(
+    shape = "dot",
+    scaling = list(min = 15, max = 60),
+    font = list(size = 16, color = "black"),
+    borderWidth = 2,
+    color = list(
+      border = "darkblue",
+      background = "lightblue",
+      highlight = list(border = "red", background = "orange")
+    )
+  ) %>%
+  #stile archi 
+  visEdges(
+    arrows = list(to = list(enabled = TRUE, scaleFactor = 0.5)),
+    smooth = list(enabled = TRUE, type = "curvedCW", roundness = 0.2),
+    color = list(color = "rgba(100, 150, 200, 0.4)", highlight = "red")
+  ) %>%
+  visOptions(
+    highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE), #: Al click evidenzia aeroporti vicini (distanza 1 = connessi direttamente)
+    nodesIdSelection = list(enabled = TRUE, main = "Seleziona Aeroporto"), #Menu a tendina per selezionare aeroporto specifico
+    selectedBy = list(variable = "group", main = "Seleziona per Stato") # Filtro per stato
+  ) %>%
+  visPhysics(
+    solver = "forceAtlas2Based",
+    forceAtlas2Based = list(
+      gravitationalConstant = -65, #repulsione tra nodi
+      centralGravity = 0.01, #attrazione verso il centro 
+      springLength = 400, #lunghezza archi
+      springConstant = 0.05 #rigidità
+    ),
+    stabilization = list(iterations = 100)
+  ) %>%
+  visInteraction(
+    navigationButtons = TRUE,
+    hover = TRUE,
+    zoomView = TRUE,
+    dragView = TRUE
+  ) %>%
+  visLayout(randomSeed = 42) %>%
+  visLegend(width = 0.1, position = "right", main = "Stati")
+
+
+# lo salvo come HTML
+saveWidget(
+  vis_graph,
+  file = "grafo_rete_aerea.html",
+  selfcontained = TRUE
+)
+
+# Apro nel browser
+browseURL("grafo_rete_aerea.html")
+
+```
+mi calcolo la Betwweenness, ossia quante volte un nodo si trova lungo i percorsi più brevi che collegano altre coppie di nodi
+
+```{r}
+g_full <- graph_from_data_frame(
+  d = routes_clean %>% 
+    mutate(from = as.character(OriginAirportID),
+           to = as.character(DestAirportID)) %>%
+    select(from, to, n_flights),
+  directed = TRUE
+)
+
+# 2. CALCOLA BETWEENNESS (può richiedere 1-2 minuti)
+betw <- betweenness(g_full, normalized = TRUE, directed = TRUE)
+
+# 3. CREA DATAFRAME RISULTATI
+betw_df <- data.frame(
+  airport_id = names(betw),
+  betweenness = betw,
+  stringsAsFactors = FALSE
+) %>%
+  left_join(airports %>% select(airport_id, name, city, state), 
+            by = "airport_id") %>%
+  arrange(desc(betweenness))
+
+print(betw_df %>% 
+      select(city, state, betweenness))
+```
+
+Ottengo che Denver insieme a Dallas e Atlanta sono gli aereoporti con più alto Betwweenness. Che cosa significa? 
+Denver è quasi al centro degli Stati Uniti, collega facilmente costa Est ↔ costa Ovest è l'ideale per voli di media durata, che sono i più redditizi riduce tempi, carburante e costi rispetto a rotte molto lunghe (naturale usarla come punto di scalo). DEN, ATL e DFW sono: molto grandi, con tante piste, pensati fin dall’inizio per gestire connessioni rapide
+
+Denver, in particolare:
+  - ha 6 piste (una delle più lunghe al mondo)
+  - ha spazio per crescere senza limiti urbani intorno
+
+Denver (e Atlanta, Dallas): ha costi operativi più bassi, meno congestione aerea rispetto a NYC o Los Angeles, meno ritardi cronici
+
+Meteo relativamente affidabile
+
+Rispetto a: Chicago (neve e vento), New York (tempeste + traffico), San Francisco (nebbia)
+
+Visualizzo il grafo con gli aereoporti con betwweenness più alta
+
+```{r}
+knitr::include_graphics("C:/Users/Patrick/Desktop/Progetto_Advance/immagine_Stati Uniti.png")
+```
+
+```{r}
+top_bW_airports <- head(betw_df, 70)$airport_id
+
+routes_top_bw <- routes_clean %>%
+  filter(as.character(OriginAirportID) %in% top_bW_airports & 
+         as.character(DestAirportID) %in% top_bW_airports) %>%
+  mutate(from = as.character(OriginAirportID),
+         to = as.character(DestAirportID))
+
+g_top_bw <- graph_from_data_frame(
+  d = routes_top_bw %>% select(from, to, n_flights),
+  directed = TRUE
+)
+
+# Crea tabella con betweenness
+node_df <- data.frame(
+  airport_id = V(g_top_bw)$name,
+  stringsAsFactors = FALSE
+)
+
+# Join con betweenness
+node_df <- node_df %>%
+  left_join(betw_df %>% select(airport_id, betweenness, city, state), 
+            by = "airport_id")
+
+# AGGIUNGI al grafo
+V(g_top_bw)$betweenness <- node_df$betweenness
+V(g_top_bw)$city <- node_df$city
+V(g_top_bw)$state <- node_df$state
+
+
+set.seed(42)
+
+ggraph(g_top_bw, layout = 'kk') +
+  geom_edge_link(
+    aes(alpha = n_flights, color = n_flights), 
+    arrow = arrow(length = unit(1.5, 'mm'), type = "closed"), 
+    end_cap = circle(2, 'mm')
+  ) +
+  geom_node_point(
+    aes(size = betweenness, fill= betweenness),shape = 21,color = "white", stroke = 1.5, alpha = 0.9
+  ) +
+  geom_node_text(
+    aes(label = city), size = 2.5, fontface = "bold",repel = TRUE
+  ) +
+  scale_fill_viridis_c(
+    option = "plasma",  name = "Betweenness", direction = -1
+  ) +
+  scale_edge_color_gradient(
+    low = "#fee5d9", high = "#a50f15", name = "N. Voli"
+  ) +
+  scale_size_continuous(range = c(2,8), guide = "none") +
+  scale_edge_width_continuous(range = c(0.2, 2), guide = "none") +
+  scale_edge_alpha_continuous(range = c(0.1, 1), guide = "none") +
+  theme_graph(background = "#f7f7f7") +
+  labs(
+    title = "Aeroporti per Betweenness Centrality",
+    subtitle = "Dimensione/Colore = Betweenness | Colore/Trasparenza archi = N. Voli"
+  ) +
+  theme_void()
+```
+
+# RAPPORTO IN_DEGREE - OUT_DEGREE
+
+L'analisi del rapporto in-degree/out-degree rivela una rete fortemente simmetrica (balance ≈ 1 per tutti gli aeroporti), tipica dei network di trasporto aereo dove le rotte sono intrinsecamente bidirezionali. Questo conferma che non esistono aeroporti 'destinazione pura', ma tutti gli hub servono traffico in entrambe le direzioni. La Betweenness Centrality si è rivelata una metrica più discriminante per identificare gli hub critici come Denver, Dallas e Atlanta, che fungono da ponti necessari per molti viaggi transcontinentali.
+
+```{r}
+# Calcola degree
+degree_analysis <- data.frame(
+  airport_id = V(g_full)$name,
+  degree_in = degree(g_full, mode = "in"),   # Rotte in arrivo
+  degree_out = degree(g_full, mode = "out"), # Rotte in partenza
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    degree_total = degree_in + degree_out,
+    # HUB hanno degree_in ≈ degree_out (bilanciato)
+    # DESTINAZIONE hanno degree_in > degree_out
+    balance = degree_in / degree_out,
+    type = case_when(
+      abs(balance - 1) < 0.2 ~ "Hub Bilanciato",
+      balance > 1.2 ~ "Destinazione (più arrivi)",
+      balance < 0.8 ~ "Origine (più partenze)"
+    )
+  ) %>%
+  left_join(airports %>% select(airport_id, city, state), by = "airport_id") %>%
+  arrange(desc(balance))
+
+print(degree_analysis)
+```
+
+
+# Aereoporti con maggior ritardo alla partenza e ritardi per rotta
+Analizziamo i ritardi dei voli (DepDelay = ritardo alla partenza in minuti). Identifichiamo aeroporti e rotte più problematiche.
+
+Ritardi per aeroporto di origine - Identifica quali aeroporti hanno più problemi di puntualità, ossia il ritardo alal partenza
+Ritardi per rotta - Mostra le tratte più problematiche, ossia quale tratta (origine → destinazione) ha i voli che partono più in ritardo.
+Metriche calcolate:
+Ritardo medio (minuti)
+Ritardo mediano
+Ritardo massimo che ha avuto un certo aereoporto alla partenza
+Percentuale voli con >15 minuti di ritardo (ad esempio chicago ha il 30% dei voli con ritardo più di 15min)
+
+```{r}
+# RITARDI PER AEROPORTO DI ORIGINE
+delay_by_origin <- flights %>%
+  filter(!is.na(DepDelay)) %>%
+  mutate(OriginAirportID = as.character(OriginAirportID)) %>%
+  group_by(OriginAirportID) %>%
+  summarise(
+    n_voli = n(),
+    ritardo_medio = mean(DepDelay),
+    ritardo_mediano = median(DepDelay),
+    ritardo_max = max(DepDelay),
+    perc_ritardo = sum(DepDelay > 15) / n() * 100,  # % voli con >15min ritardo
+    .groups = "drop"
+  ) %>%
+  left_join(airports %>% select(airport_id, city, state), 
+            by = c("OriginAirportID" = "airport_id")) %>%
+  filter(n_voli >= 1000) %>%  # Solo aeroporti con traffico significativo
+  arrange(desc(ritardo_medio))
+
+print(delay_by_origin %>% 
+      select(city, state, n_voli, ritardo_medio, perc_ritardo, ritardo_max) %>%
+      head(70))
+
+# RITARDI PER ROTTA
+delay_by_route <- flights %>%
+  filter(!is.na(DepDelay)) %>%
+  mutate(
+    OriginAirportID = as.character(OriginAirportID),
+    DestAirportID = as.character(DestAirportID)
+  ) %>%
+  group_by(OriginAirportID, DestAirportID) %>%
+  summarise(
+    n_voli = n(),
+    ritardo_medio = mean(DepDelay),
+    perc_ritardo = sum(DepDelay > 15) / n() * 100,
+    .groups = "drop"
+  ) %>%
+  filter(n_voli >= 100) %>%  # Solo rotte frequenti
+  left_join(airports %>% select(airport_id, city, state), 
+            by = c("OriginAirportID" = "airport_id")) %>%
+  rename(origin_city = city, origin_state = state) %>%
+  left_join(airports %>% select(airport_id, city, state), 
+            by = c("DestAirportID" = "airport_id")) %>%
+  rename(dest_city = city, dest_state = state) %>%
+  arrange(desc(ritardo_medio))
+
+print(delay_by_route %>% 
+      mutate(rotta = paste(origin_city, "→", dest_city)) %>%
+      select(rotta, n_voli, ritardo_medio, perc_ritardo) %>%
+      head(70))
+
+
+```
+
+Notiamo che gli aeroporti di Chicago sono presenti 3 volte nella top 10 aereoporti con maggiori ritardi medi. 
+
+```{r}
+top_routes <- delay_by_route %>%
+  mutate(rotta = paste(origin_city, "→", dest_city)) %>%
+  arrange(desc(ritardo_medio)) %>%
+  head(10)
+
+ggplot(top_routes, aes(x = reorder(rotta, ritardo_medio), y = ritardo_medio, fill = ritardo_medio)) +
+  geom_col() +
+  geom_text(aes(label = paste0(round(ritardo_medio, 1), " min\n(", 
+                                format(n_voli, big.mark = ","), " voli)")), 
+            hjust = -0.1, size = 2.5) +
+  scale_fill_gradient(low = "yellow", high = "red", name = "Ritardo (min)") +
+  coord_flip() +  # Barre orizzontali
+  ylim(0, max(top_routes$ritardo_medio) * 1.15) +  # Spazio per etichette
+  labs(
+    title = "Top 10 Rotte con Maggiori Ritardi Medi",
+    subtitle = "Basato su ritardo medio alla partenza (6 mesi Gen-Giu)",
+    x = "Rotta",
+    y = "Ritardo Medio (minuti)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+```
+
+## Principali rotte aeree interne degli Stati Uniti (ponderate in base al numero di passeggeri) 
+```{r}
+knitr::include_graphics("C:/Users/Patrick/Desktop/Progetto_Advance/Principali rotte aeree stati uniti")
+```
+##  Traffico aereo
+
+```{r}
+knitr::include_graphics("C:/Users/Patrick/Desktop/Progetto_Advance/traffico aereo.JPG")
+
+```
+
+Chicago con entrambi gli aereoporti sono i protagonisti (in negativo), ma perché?
+Perché Chicago combina meteo difficile (neve, vento e temporali), traffico enorme e spazio aereo congestionato
+Soprattutto O’Hare, nonostante i lavori recenti è nato negli anni 50, gate poco flessibili, rullaggi lunghissimi
+Lago Michigan, fenomeni come la neve da effetto lago e la nebbia, gli aerei tendono di passare sopra al lago, dove le condizioni sono più instabili
+Il 30% dei voli è in ritardo (con ritardo medio di 16 min)
+
+```{r}
+# Grafico a barre top 20 aeroporti
+top_delay_airports <- delay_by_origin %>% head(30)
+
+ggplot(top_delay_airports, aes(x = reorder(city, -ritardo_medio), y = ritardo_medio, fill = perc_ritardo)) +
+  geom_col() +
+  scale_fill_gradient(low = "yellow", high = "red", name = "% Voli\nRitardo >15min") +
+  labs(
+    title = "Top 30 Aeroporti con Maggiori Ritardi",
+    subtitle = "Ritardo medio alla partenza (minuti)",
+    x = "Aeroporto",
+    y = "Ritardo Medio (minuti)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+# ANALISI TEMPO PERSO/GUADAGNATO IN VOLO
+
+Calcoliamo la differenza tra ritardo alla partenza e ritardo all'arrivo per vedere se i piloti riescono a recuperare tempo in volo. Calcolo il tempo perso in volo come il DepDelay - ArrDelay (se è positivo vuol dire che ho guadagnato tempo, se è negativo vuol dire che ho perso tempo).
+Inoltre restituisco il risultato delle migliori tratte e delle peggiori tratte a livello di recupero di tempo
+
+```{r}
+# Calcola tempo perso/guadagnato
+flight_recovery <- flights %>%
+  filter(!is.na(DepDelay) & !is.na(ArrDelay)) %>%
+  mutate(
+    OriginAirportID = as.character(OriginAirportID),
+    DestAirportID = as.character(DestAirportID),
+    # Tempo recuperato = DepDelay - ArrDelay
+    # Positivo = recuperato tempo in volo
+    # Negativo = perso ulteriore tempo
+    time_recovery = DepDelay - ArrDelay
+  )
+
+# Statistiche generali
+cat("STATISTICHE RECUPERO TEMPO \n\n")
+cat("Tempo medio recuperato in volo:", round(mean(flight_recovery$time_recovery), 2), "minuti\n")
+cat("Percentuale di voli che recuperano tempo (>0):", 
+    round(sum(flight_recovery$time_recovery > 0) / nrow(flight_recovery) * 100, 1), "%\n")
+cat("Percentuale di voli che perdono tempo (<0):", 
+    round(sum(flight_recovery$time_recovery < 0) / nrow(flight_recovery) * 100, 1), "%\n")
+
+# Per rotta
+recovery_by_route <- flight_recovery %>%
+  group_by(OriginAirportID, DestAirportID) %>%
+  summarise(
+    n_voli = n(),
+    recupero_medio = mean(time_recovery),
+    perc_di_recuperi = sum(time_recovery > 0) / n() * 100,
+    .groups = "drop"
+  ) %>%
+  filter(n_voli >= 100) %>%
+  left_join(airports %>% select(airport_id, city, state), 
+            by = c("OriginAirportID" = "airport_id")) %>%
+  rename(origin_city = city, origin_state = state) %>%
+  left_join(airports %>% select(airport_id, city, state), 
+            by = c("DestAirportID" = "airport_id")) %>%
+  rename(dest_city = city, dest_state = state)
+
+# Top rotte che recuperano di più
+print(recovery_by_route %>%
+      mutate(rotta = paste(origin_city, "→", dest_city)) %>%
+      select(rotta, n_voli, recupero_medio, perc_di_recuperi) %>%
+      arrange(desc(recupero_medio)) %>%
+      head(70))
+
+# Top rotte che perdono più tempo
+print(recovery_by_route %>%
+      mutate(rotta = paste(origin_city, "→", dest_city)) %>%
+      select(rotta, n_voli, recupero_medio, perc_di_recuperi) %>%
+      arrange(recupero_medio) %>%
+      head(70))
+```
+
+## Visualizzazione Recupero Tempo
+
+Si possono notare ci sono molti minuti di recupero, soprattutto per quanto riguarda la tratta New York → Kansas, come mai?
+Questo beneficio non può essere attribuito a condizioni meteorologiche favorevoli o a rotte più brevi, ma piuttosto a fattori operativi specifici legati a questi aeroporti
+Le compagnie inseriscono margini extra negli orari ufficiali (per traffico e ritardi a New York). Se tutto va liscio, quel margine viene “recuperato” in volo.
+Meno congestione in arrivo Kansas ha meno traffico e attese rispetto a NYC, quindi l’atterraggio è spesso diretto.
+
+Inoltre si ha una distribuzione quasi normale del tempo recuperato, con una media positiva, indicando che in generale i piloti riescono a compensare parte dei ritardi iniziali durante il volo. Per quanto riguarda i voli da Est a Ovest un fattore importante è il jetstream, che influenza in modo positivo il tempo di volo. 
+
+
+```{r}
+
+# Distribuzione del tempo recuperato
+ggplot(flight_recovery, aes(x = time_recovery)) +
+  geom_histogram(bins = 100, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed", size = 1) +
+  geom_vline(xintercept = mean(flight_recovery$time_recovery), 
+             color = "darkgreen", linetype = "dashed", size = 1) +
+  annotate("text", x = mean(flight_recovery$time_recovery) + 5, y = Inf, 
+           label = paste("Media:", round(mean(flight_recovery$time_recovery), 1), "min"),
+           vjust = 2, color = "darkgreen", fontface = "bold")  +
+  xlim(-100, 100) + 
+    labs(
+    title = "Distribuzione Tempo Recuperato/Perso in Volo",
+    subtitle = "Positivo = tempo recuperato | Negativo = tempo perso ulteriormente",
+    x = "Tempo Recuperato (minuti)",
+    y = "Numero di Voli"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 14, face = "bold"))
+
+# Top 30 rotte per recupero tempo
+top_recovery <- recovery_by_route %>%
+  arrange(desc(recupero_medio)) %>%
+  head(30) %>%
+  mutate(rotta = paste(origin_city, "→", dest_city))
+
+ggplot(top_recovery, aes(x = reorder(rotta, recupero_medio), y = recupero_medio, fill = perc_di_recuperi)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_gradient(low = "orange", high = "darkgreen", name = "% Voli che\nrecuperano") +
+  labs(
+    title = "Top 30 Rotte con Maggior Recupero Tempo in Volo",
+    subtitle = "Minuti medi recuperati durante il volo",
+    x = "Rotta",
+    y = "Tempo Medio Recuperato (minuti)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 14, face = "bold"))
+```
+
+# ANALISI TEMPORALE DEI RITARDI
+
+Analizziamo come i ritardi variano in base al giorno della settimana e al giorno del mese, per identificare pattern temporali ricorrenti.
+
+## Ritardi per Giorno della Settimana
+
+```{r}
+# ANALISI PER GIORNO DELLA SETTIMANA
+
+# Mappa numeri a nomi giorni
+day_names <- c("Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica")
+
+delay_by_weekday <- flights %>%
+  filter(!is.na(DepDelay) & !is.na(DayOfWeek)) %>%
+  mutate(
+    DayName = factor(day_names[DayOfWeek], levels = day_names),
+    is_weekend = DayOfWeek %in% c(6, 7)  # Sabato e Domenica
+  ) %>%
+  group_by(DayOfWeek, DayName, is_weekend) %>%
+  summarise(
+    n_voli = n(),
+    ritardo_medio = mean(DepDelay),
+    ritardo_mediano = median(DepDelay),
+    sd_ritardo = sd(DepDelay),
+    perc_ritardo_15min = sum(DepDelay > 15) / n() * 100,
+    perc_ritardo_grave = sum(DepDelay > 30) / n() * 100,
+    .groups = "drop"
+  ) %>%
+  arrange(DayOfWeek)
+
+cat("STATISTICHE RITARDI PER GIORNO DELLA SETTIMANA\n\n")
+print(delay_by_weekday %>% 
+      select(DayName, n_voli, ritardo_medio, perc_ritardo_15min, perc_ritardo_grave))
+
+# Identifica giorno peggiore e migliore
+worst_day <- delay_by_weekday %>% filter(ritardo_medio == max(ritardo_medio))
+best_day <- delay_by_weekday %>% filter(ritardo_medio == min(ritardo_medio))
+
+cat("\n")
+cat("Giorno PEGGIORE:", worst_day$DayName, "- Ritardo medio:", round(worst_day$ritardo_medio, 2), "minuti\n")
+cat("Giorno MIGLIORE:", best_day$DayName, "- Ritardo medio:", round(best_day$ritardo_medio, 2), "minuti\n")
+
+# Confronto Weekend vs Feriali
+weekend_vs_weekday <- flights %>%
+  filter(!is.na(DepDelay) & !is.na(DayOfWeek)) %>%
+  mutate(periodo = ifelse(DayOfWeek %in% c(6, 7), "Weekend", "Giorni Feriali")) %>%
+  group_by(periodo) %>%
+  summarise(
+    n_voli = n(),
+    ritardo_medio = mean(DepDelay),
+    perc_ritardo_15min = sum(DepDelay > 15) / n() * 100,
+    .groups = "drop"
+  )
+
+cat("\nCONFRONTO WEEKEND vs GIORNI FERIALI\n")
+print(weekend_vs_weekday)
+```
+
+### Visualizzazione Ritardi per Giorno Settimana
+
+## ANALISI RITARDI PER GIORNO DELLA SETTIMANA
+
+L'analisi dei ritardi alla partenza per giorno della settimana rivela **pattern operativi e di domanda distintamente diversi** tra giorni feriali e weekend, basata su oltre 2.5 milioni di voli distribuiti nei 6 mesi da Gennaio a Giugno. 
+
+I **giorni feriali** (Lunedì-Venerdì) mostrano ritardi sistematicamente più elevati, con il **venerdì che registra il picco settimanale di 13.6 minuti** su 406,563 voli, seguito dal **venerdì** (12.3 minuti su 396,387 voli) e **lunedì** (10.3 minuti su 407,837 voli). Questo pattern riflette la natura del traffico business: il lunedì concentra i viaggi di inizio settimana con aeroporti che "ripartono" dopo il weekend, accumulando ritardi iniziali dovuti a riposizionamento di equipaggi e aeromobili. Il picco del venerdì è particolarmente significativo perché combina due fattori critici: (1) il **massimo volume di traffico business** della settimana, con professionisti che completano spostamenti urgenti prima del weekend, e (2) l'**inizio del traffico leisure**, con famiglie che partono anticipatamente per weekend lunghi, creando una sovrapposizione che congestiona gli aeroporti principali.
+
+I giorni centrali della settimana (martedì-mercoledì-giovedì) mostrano ritardi intermedi (8.6-10.4 minuti), rappresentando il "regime stazionario" delle operazioni dove il traffico è prevalentemente business puro, senza picchi leisure, e le compagnie hanno ottimizzato crew e slot aeroportuali. Il **martedì emerge come giorno più puntuale dei feriali** (8.6 minuti su 397,594 voli), probabilmente perché beneficia del minor traffico post-lunedì e della pulizia operativa del weekend precedente.
+
+Il **weekend** (sabato-domenica) presenta ritardi **significativamente inferiori**: il **sabato è il giorno più puntuale della settimana con soli 7.4 minuti** di ritardo medio su 318,537 voli, mentre la **domenica registra 9.6 minuti** su 372,228 voli. Il sabato beneficia di molteplici fattori favorevoli: (1) **volume di traffico ridotto del ~22%** rispetto ai giorni feriali (318k vs ~400k voli), (2) prevalenza di **traffico leisure** che è meno sensibile agli orari e tollera meglio riprogrammazioni, (3) **minor congestione degli slot aeroportuali** con aeroporti business-oriented (LaGuardia, Reagan National) che operano sotto capacità, e (4) **equipaggi più riposati** dopo il picco del venerdì.
+
+La domenica mostra un lieve aumento dei ritardi rispetto al sabato (+2.2 minuti) nonostante un volume di traffico simile. Questo incremento è attribuibile al **traffico di rientro** del weekend: mentre il sabato vede partenze distribuite tutto il giorno, la domenica concentra i rientri nelle fasce pomeridiane/serali (14:00-21:00), creando **picchi di congestione temporanea** negli hub principali. Inoltre, la domenica pomeriggio inizia il riposizionamento strategico di aeromobili ed equipaggi in preparazione del lunedì mattina business, aggiungendo complessità operativa.
+
+**Differenziale weekend vs feriali**: La differenza media di **~4.5 minuti** tra giorni feriali (media 11.1 min) e weekend (media 8.3 min) quantifica l'impatto del volume di traffico e della tipologia di passeggero sulla puntualità. Questo gap evidenzia come la **congestione sistemica** (troppi voli simultanei in slot limitati) contribuisca più ai ritardi rispetto a problematiche tecniche o meteorologiche, che sarebbero distribuite uniformemente su tutti i giorni della settimana.
+
+**Implicazioni operative**: Il pattern suggerisce che compagnie aeree e aeroporti potrebbero **ottimizzare le tariffe** per incentivare spostamenti di traffico dal venerdì (sovraccarico) al martedì/mercoledì (sottoutilizzato), migliorando la puntualità complessiva senza investimenti infrastrutturali. Inoltre, il dato weekend dimostra che la rete aerea USA ha **capacità latente significativa**: se operasse sempre ai livelli di congestione del sabato, i ritardi medi calerebbero del ~33%.
+
+```{r, fig.width=8, fig.height=6}
+# Grafico a barre per giorno della settimana
+ggplot(delay_by_weekday, aes(x = DayName, y = ritardo_medio, fill = is_weekend)) +
+  geom_col(alpha = 0.8) +
+  geom_text(aes(label = paste0(round(ritardo_medio, 1), " min\n(", 
+                                format(n_voli, big.mark = ","), " voli)")), 
+            vjust = -0.5, fontface = "bold", size = 3.5) +
+  scale_fill_manual(values = c("FALSE" = "steelblue", "TRUE" = "coral"),
+                    labels = c("Giorni Feriali", "Weekend"),
+                    name = "") +
+  ylim(0,18) +
+  labs(
+    title = "Ritardo Medio alla Partenza per Giorno della Settimana",
+    subtitle = "Evidenziati weekend vs giorni feriali",
+    x = "Giorno della Settimana",
+    y = "Ritardo Medio (minuti)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    legend.position = "top"
+  )
+
+```
+
+## Ritardi per Giorno del Mese
+
+```{r}
+# ANALISI PER GIORNO DEL MESE
+
+delay_by_monthday <- flights %>%
+  filter(!is.na(DepDelay) & !is.na(DayofMonth)) %>%
+  mutate(
+    periodo_mese = case_when(
+      DayofMonth <= 10 ~ "Inizio Mese (1-10)",
+      DayofMonth <= 20 ~ "Metà Mese (11-20)",
+      TRUE ~ "Fine Mese (21-31)"
+    )
+  ) %>%
+  group_by(DayofMonth, periodo_mese) %>%
+  summarise(
+    n_voli = n(),
+    ritardo_medio = mean(DepDelay),
+    ritardo_mediano = median(DepDelay),
+    perc_ritardo_15min = sum(DepDelay > 15) / n() * 100,
+    perc_ritardo_grave = sum(DepDelay > 30) / n() * 100,
+    .groups = "drop"
+  ) %>%
+  arrange(DayofMonth)
+
+cat("STATISTICHE RITARDI PER GIORNO DEL MESE\n\n")
+print(delay_by_monthday %>% 
+      select(DayofMonth, n_voli, ritardo_medio, perc_ritardo_15min))
+
+# Identifica giorni migliori e peggiori
+worst_days <- delay_by_monthday %>% arrange(desc(ritardo_medio)) %>% head(5)
+best_days <- delay_by_monthday %>% arrange(ritardo_medio) %>% head(5)
+
+cat("\nTop 5 GIORNI PEGGIORI del mese:\n")
+print(worst_days %>% select(DayofMonth, ritardo_medio, perc_ritardo_15min))
+
+cat("\nTop 5 GIORNI MIGLIORI del mese:\n")
+print(best_days %>% select(DayofMonth, ritardo_medio, perc_ritardo_15min))
+
+# Confronto Inizio vs Metà vs Fine Mese
+delay_by_period <- flights %>%
+  filter(!is.na(DepDelay) & !is.na(DayofMonth)) %>%
+  mutate(
+    periodo_mese = case_when(
+      DayofMonth <= 10 ~ "Inizio Mese (1-10)",
+      DayofMonth <= 20 ~ "Metà Mese (11-20)",
+      TRUE ~ "Fine Mese (21-31)"
+    )
+  ) %>%
+  group_by(periodo_mese) %>%
+  summarise(
+    n_voli = n(),
+    ritardo_medio = mean(DepDelay),
+    perc_ritardo_15min = sum(DepDelay > 15) / n() * 100,
+    perc_ritardo_grave = sum(DepDelay > 30) / n() * 100,
+    .groups = "drop"
+  )
+
+cat("\nCONFRONTO PER PERIODO DEL MESE\n")
+print(delay_by_period)
+```
+
+### Visualizzazione Ritardi per Giorno del Mese
+
+## INTERPRETAZIONE PATTERN MENSILE DEI RITARDI
+
+L'andamento dei ritardi nel corso del mese rivela un **pattern ciclico significativo** che riflette le dinamiche operative del traffico aereo. L'**inizio mese (giorni 1-10)** mostra ritardi relativamente contenuti (media ~10 minuti), probabilmente grazie al "reset" operativo dopo la fine del mese precedente: gli equipaggi sono riposati, la manutenzione programmata è completata, e gli slot aeroportuali si riorganizzano. Il **picco drammatico al giorno 10** (~16 minuti) coincide spesso con il primo weekend completo post-festività o eventi, quando il traffico leisure aumenta improvvisamente sovrapponendosi a quello business.
+
+La **metà mese (giorni 11-20)** presenta l'andamento più stabile (~12-13 minuti), rappresentando il periodo di "regime" dove le operazioni sono standardizzate. È interessante notare che i giorni 15-17 mostrano un calo anomalo (~8 minuti), probabilmente correlato alla **minore domanda infrasettimanale** dopo il weekend di metà mese, quando molti viaggiatori business completano i loro spostamenti e il traffico leisure non è ancora ripartito.
+
+La **fine mese (giorni 21-31)** evidenzia un **trend decrescente marcato** (da ~13 a ~7.5 minuti). Questo fenomeno può essere spiegato da molteplici fattori: (1) **accumulo di personale riserva** - verso fine mese le compagnie hanno equipaggi extra disponibili per coprire le assenze accumulate; (2) **maggiore esperienza operativa** - dopo 3 settimane di operazioni, le crew hanno ottimizzato le procedure; (3) **riduzione traffico business** - gli ultimi giorni del mese vedono meno viaggi d'affari urgenti; (4) **pressione sui KPI** - compagnie aeree e aeroporti "spingono" per chiudere il mese con metriche di puntualità migliori, fondamentali per i report mensili.
+
+Il **crollo finale al giorno 31** (~7.5 minuti, tra i migliori del mese) suggerisce anche un possibile **bias statistico**: molti voli programmati per il 31 slittano contabilmente al 1° del mese successivo in caso di ritardo, "pulendo" artificialmente i dati dell'ultimo giorno. Complessivamente, questo pattern evidenzia come la puntualità aerea non sia casuale ma fortemente influenzata da cicli operativi, gestione delle risorse umane e dinamiche commerciali prevedibili.
+
+```{r, fig.width=14, fig.height=6}
+# Grafico a linee per giorno del mese
+ggplot(delay_by_monthday, aes(x = DayofMonth, y = ritardo_medio)) +
+  geom_line(color = "darkblue", size = 1) +
+  geom_point(aes(color = periodo_mese), size = 3, alpha = 0.8) +
+  geom_smooth(method = "loess", se = TRUE, color = "red", 
+              linetype = "dashed", alpha = 0.2) +
+  geom_hline(yintercept = mean(delay_by_monthday$ritardo_medio), 
+             linetype = "dashed", color = "gray50", alpha = 0.7) +
+  scale_color_brewer(palette = "Set1", name = "Periodo Mese") +
+  scale_x_continuous(breaks = seq(1, 31, 2)) +
+  labs(
+    title = "Ritardo Medio alla Partenza per Giorno del Mese",
+    subtitle = "Linea rossa = trend | Linea grigia = media mensile",
+    x = "Giorno del Mese",
+    y = "Ritardo Medio (minuti)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "top"
+  )
+
+delay_by_period_plot <- flights %>%
+  filter(!is.na(DepDelay) & !is.na(DayofMonth)) %>%
+  mutate(
+    periodo_mese = factor(
+      case_when(
+        DayofMonth <= 10 ~ "Inizio (1-10)",
+        DayofMonth <= 20 ~ "Metà (11-20)",
+        TRUE ~ "Fine (21-31)"
+      ),
+      levels = c("Inizio (1-10)", "Metà (11-20)", "Fine (21-31)")
+    )
+  )
+
+```
+
+## Heatmap: Giorno Settimana vs Giorno Mese
+
+Nella seguente heatmap possiamo notare che effettivamente i ritardi variano molto in base al giorno del mese e al giorno della settimana, con i giorni centrali del mese che tendono ad avere ritardi maggiori rispetto all'inizio e alla fine del mese. Inoltre, i fine settimana (sabato e domenica) mostrano generalmente ritardi inferiori rispetto ai giorni feriali. Questo pattern suggerisce che la gestione del traffico aereo e le operazioni aeroportuali possono essere influenzate da fattori temporali specifici, come la domanda di viaggio e la congestione degli aeroporti in determinati periodi del mese e della settimana.
+
+```{r, fig.width=14, fig.height=8}
+# HEATMAP COMBINATA GIORNO SETTIMANA x GIORNO MESE
+
+heatmap_data <- flights %>%
+  filter(!is.na(DepDelay) & !is.na(DayOfWeek) & !is.na(DayofMonth)) %>%
+  group_by(DayOfWeek, DayofMonth) %>%
+  summarise(
+    n_voli = n(),
+    ritardo_medio = mean(DepDelay),
+    perc_ritardo = sum(DepDelay > 15) / n() * 100,
+    .groups = "drop"
+  ) %>%
+  mutate(DayName = factor(day_names[DayOfWeek], levels = day_names))
+
+# Heatmap ritardo medio
+ggplot(heatmap_data, aes(x = DayofMonth, y = DayName, fill = ritardo_medio)) +
+  geom_tile(color = "white", size = 0.5) +
+  geom_text(aes(label = round(ritardo_medio, 0)), 
+            color = "white", size = 2.5, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "darkgreen", mid = "yellow", high = "darkred",
+    midpoint = mean(heatmap_data$ritardo_medio),
+    name = "Ritardo Medio\n(minuti)"
+  ) +
+  scale_x_continuous(breaks = seq(1, 31, 2)) +
+  labs(
+    title = "Heatmap Ritardi: Giorno Settimana vs Giorno Mese",
+    subtitle = "Verde = meno ritardi | Rosso = più ritardi",
+    x = "Giorno del Mese",
+    y = "Giorno della Settimana"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.y = element_text(size = 11, face = "bold"),
+    legend.position = "right"
+  )
+
+```
+
+
+## cluster sui ritardi
+Con il metodo silhouette vado a capire il numero ottimale di cluster, così da poter eseguire il k-means in modo più efficace.
+
+```{r}
+# CLUSTERING AEROPORTI PER PATTERN DI RITARDI
+
+# Prepara features per clustering
+cluster_data <- flights %>%
+  filter(!is.na(DepDelay) & !is.na(ArrDelay)) %>%
+  mutate(OriginAirportID = as.character(OriginAirportID)) %>%
+  group_by(OriginAirportID) %>%
+  summarise(
+    n_voli = n(),
+    # Metriche ritardo
+    ritardo_medio_dep = mean(DepDelay),
+    ritardo_medio_arr = mean(ArrDelay),
+    sd_ritardo_dep = sd(DepDelay),
+    sd_ritardo_arr = sd(ArrDelay),
+    # Percentili
+    ritardo_p75_dep = quantile(DepDelay, 0.75),
+    ritardo_p95_dep = quantile(DepDelay, 0.95),
+    # Pattern temporali
+    perc_ritardo_grave = sum(DepDelay > 30) / n() * 100,
+    perc_anticipo = sum(DepDelay < -5) / n() * 100,
+    # Recupero tempo
+    recupero_medio = mean(DepDelay - ArrDelay),
+    .groups = "drop"
+  ) %>%
+  filter(n_voli >= 1000) %>%  # Solo aeroporti significativi
+  left_join(airports %>% select(airport_id, city, state), 
+            by = c("OriginAirportID" = "airport_id"))
+
+# Prepara matrice per clustering (rimuovi ID e nomi)
+cluster_matrix <- cluster_data %>%
+  select(-OriginAirportID, -city, -state, -n_voli) %>%
+  scale()  # Standardizza
+
+# USA città + codice aeroporto per evitare duplicati (ho avuto il problema su CHicago e New York)
+rownames(cluster_matrix) <- paste0(cluster_data$city, " (", cluster_data$OriginAirportID, ")")
+
+# Determina numero ottimale di cluster
+
+fviz_nbclust(cluster_matrix, kmeans, method = "silhouette") +
+  labs(title = "Metodo Silhouette - Numero Ottimale Cluster")
+```
+
+```{r}
+# Eseguo K-means con numero ottimale 
+set.seed(42)
+k <- 3
+km_result <- kmeans(cluster_matrix, centers = k, nstart = 25)
+
+# Aggiungi cluster ai dati
+cluster_data$cluster <- km_result$cluster
+
+```
+
+
+```{r}
+# Estrai coordinate PCA
+pca_coords <- prcomp(cluster_matrix)$x[, 1:2]
+pca_df <- data.frame(
+  city = cluster_data$city,
+  airport_id = cluster_data$OriginAirportID,
+  PC1 = pca_coords[, 1],
+  PC2 = pca_coords[, 2],
+  cluster = as.factor(km_result$cluster)
+)
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = cluster, label = city)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_text(vjust = -0.5, size = 2.5, fontface = "bold") +  # Nomi aeroporti
+  stat_ellipse(aes(group = cluster), type = "norm", level = 0.68) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title = "Clustering Aeroporti per Pattern Ritardi",
+    subtitle = "Principal Component Analysis (PCA)",
+    x = "PC1",
+    y = "PC2",
+    color = "Cluster"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+```
+
+
+INTERPRETAZIONE DEI 3 CLUSTER
+L'analisi di clustering ha identificato tre gruppi distinti di aeroporti con pattern di ritardi significativamente diversi:
+
+VERDE  CLUSTER 1 - "Aeroporti Mediamente Efficienti" (34 aeroporti)
+Include aeroporti come Albuquerque, Austin, Nashville, Boston, Buffalo, New York, Washington, Philadelphia e Miami.
+
+  Questo cluster presenta ritardi moderati (9.41 minuti alla partenza, 6.19 all'arrivo) con una buona percentuale di voli in anticipo (22.66%). Gli aeroporti di questo gruppo mostrano una gestione    operativa bilanciata, con l'11.16% di ritardi gravi. Si tratta principalmente di hub della Costa Est e città medie che riescono a mantenere un equilibrio tra volume di traffico ed efficienza        operativa.
+
+ARANCIO CLUSTER 2 - "Aeroporti Più Puntuali" (21 aeroporti)
+Comprende Anchorage, Hartford, Burbank, Honolulu, Long Beach, Portland, San Francisco e Phoenix.
+
+  Questo cluster si distingue per i ritardi più bassi tra tutti i gruppi (6.50 minuti alla partenza, 3.30 all'arrivo) e la minore variabilità (31.13). Con solo l'8.48% di ritardi gravi e il 22.15%    di voli in anticipo, rappresenta gli aeroporti più efficienti in termini di puntualità. Si tratta principalmente di aeroporti secondari, regionali o della Costa Ovest che beneficiano di una minore   congestione rispetto ai mega-hub nazionali.
+
+BLU CLUSTER 3 - "Mega-Hub Congestionati" (15 aeroporti)
+Include i principali hub nazionali: Atlanta, Dallas, Denver, Chicago, Houston e Fort Worth, oltre a Baltimore.
+
+  Questo cluster presenta i ritardi più elevati (13.27 minuti alla partenza, 8.62 all'arrivo) e la percentuale più alta di ritardi gravi (14.06%). Significativamente, solo il 10.81% dei voli parte    in anticipo, circa la metà rispetto agli altri cluster. Nonostante ciò, questi aeroporti mostrano il miglior recupero di tempo in volo (4.65 minuti), suggerendo che i piloti compensano attivamente   i ritardi a terra accelerando durante il volo. Questi hub sono essenziali per la connettività nazionale ma soffrono di congestione sistemica dovuta all'altissimo volume di traffico gestito.
+
+I risultati evidenziano un chiaro trade-off tra connettività e puntualità. I mega-hub (Cluster 3) offrono più collegamenti ma con ritardi significativamente maggiori, mentre aeroporti secondari (Cluster 2) garantiscono migliore puntualità a scapito di minore connettività diretta.
+
+```{r}
+# STATISTICHE DETTAGLIATE PER CLUSTER
+
+cluster_stats <- cluster_data %>%
+  group_by(cluster) %>%
+  summarise(
+    n_aeroporti = n(),
+    # Ritardi medi
+    ritardo_medio_partenza = round(mean(ritardo_medio_dep), 2),
+    ritardo_medio_arrivo = round(mean(ritardo_medio_arr), 2),
+    # Variabilità
+    variabilita_ritardi = round(mean(sd_ritardo_dep), 2),
+    # Percentuali
+    perc_ritardi_gravi = round(mean(perc_ritardo_grave), 2),
+    perc_anticipo = round(mean(perc_anticipo), 2),
+    # Recupero tempo
+    recupero_medio = round(mean(recupero_medio), 2),)
+
+print(cluster_stats)
+
+# Visualizza aeroporti per cluster
+for(i in 1:k) {
+  cluster_airports <- cluster_data %>%
+    filter(cluster == i) %>%
+    arrange(desc(n_voli)) %>%
+    select(city, state, ritardo_medio_dep, perc_ritardo_grave, recupero_medio)
+  
+  print(cluster_airports)
+}
+
+# Confronto visivo tra cluster
+library(tidyr)
+library(ggplot2)
+
+cluster_comparison <- cluster_data %>%
+  select(cluster, city, ritardo_medio_dep, sd_ritardo_dep, 
+         perc_ritardo_grave, recupero_medio) %>%
+  pivot_longer(cols = c(ritardo_medio_dep, sd_ritardo_dep, 
+                        perc_ritardo_grave, recupero_medio),
+               names_to = "metrica", 
+               values_to = "valore")
+
+ggplot(cluster_comparison, aes(x = as.factor(cluster), y = valore, fill = as.factor(cluster))) +
+  geom_boxplot() +
+  facet_wrap(~metrica, scales = "free_y", ncol = 2) +
+  scale_fill_brewer(palette = "Set2", name = "Cluster") +
+  labs(
+    title = "Confronto Caratteristiche tra Cluster",
+    x = "Cluster",
+    y = "Valore"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+1. perc_ritardo_grave (% Ritardi Gravi)
+
+Percentuale di voli con ritardo >30 minuti alla partenza, indica la frequenza di disservizi gravi
+
+2. recupero_medio (Tempo Recuperato in Volo)
+differenza tra ritardo partenza e ritardo arrivo
+Formula: DepDelay - ArrDelay
+Positivo = tempo guadagnato in volo
+
+3. ritardo_medio_dep (Ritardo Medio Partenza)
+Media semplice dei minuti di ritardo alla partenza
+Include voli in anticipo (negativi) e in ritardo (positivi)
+
+4. sd_ritardo_dep (Deviazione Standard Ritardo Partenza)
+
+Variabilità/dispersione dei ritardi intorno alla media
+Quanto i ritardi sono prevedibili vs caotici
+
+
+# ANALISI DI ROBUSTEZZA DELLA RETE AEREA
+
+Analizziamo quanto è robusta la rete aerea rimuovendo progressivamente gli aeroporti più "critici" secondo diverse metriche di centralità.
+
+Vado a scrivermii la funzione Percolate che abbiamo visto in classe. Inoltre implemento la funzione di betweenness adattiva che ricalcola la betweenness dopo ogni rimozione di nodo (METODO PIu' EFFICACE MA LENTO)
+
+```{r}
+# Funzione percolate standard
+percolate <- function(g, size, d) {
+  giant <- vector()
+  
+  # dimensione iniziale della giant component
+  c <- components(g)
+  giant[1] <- max(c$csize)
+  
+  # trova nodi vitali
+  names(d) <- 1:length(d)
+  d <- sort(d, decreasing = TRUE)
+  vital <- as.integer(names(d[1:size]))
+  
+  # calcola dimensione giant component dopo rimozione incrementale 
+  for (i in 1:size) {
+    c <- components(delete_vertices(g, vital[1:i]))
+    giant[i+1] <- max(c$csize)
+  }
+  
+  return(giant)
+}
+
+# Funzione per attacco adattivo betweenness (ricalcola ogni volta)
+adaptive_betweenness_attack <- function(g, k) {
+  gc_sizes <- numeric(k + 1)
+  gc_sizes[1] <- max(components(g)$csize)
+
+  g2 <- g
+
+  for (i in 1:k) {
+    # 1. Calcola betweenness aggiornata
+    b <- betweenness(g2)
+
+    # 2. Rimuovi il nodo più centrale
+    highest <- which.max(b)
+    g2 <- delete_vertices(g2, highest)
+
+    # 3. Registra dimensione componente gigante
+    gc_sizes[i + 1] <- ifelse(vcount(g2) > 0,
+                              max(components(g2)$csize),
+                              0)
+  }
+
+  return(gc_sizes)
+}
+
+```
+
+Eseguo gli attachi per grado, pagerank, betweenness e power centrality
+
+```{r}
+# ESEGUI ATTACCHI
+
+size = vcount(g_full) - 1 
+
+#degree
+deg <- degree(g_full, mode = "all")
+#pagerank
+pr <- page_rank(g_full)$vector
+#betwweenness
+bet <- betweenness(g_full, normalized = TRUE, directed = TRUE)
+#potenza
+pow <- power_centrality(g_full, exponent = 1)
+
+# Funzione helper per stampare top nodi
+print_top_nodes <- function(metric, metric_name, n = 35) {
+  # Ordina per metrica decrescente
+  sorted_nodes <- sort(metric, decreasing = TRUE)
+  
+  # Prendi top n
+  top_ids <- names(sorted_nodes)[1:n]
+  
+  # Crea dataframe con info
+  top_df <- data.frame(
+    rank = 1:n,
+    airport_id = top_ids,
+    metric_value = sorted_nodes[1:n],
+    stringsAsFactors = FALSE
+  ) %>%
+    left_join(airports %>% select(airport_id, city, state), 
+              by = "airport_id")
+  
+  cat(paste0("\n", metric_name, ":\n"))
+  print(top_df %>% 
+        mutate(metric_value = round(metric_value, 3)) %>%
+        select(rank, city, state, metric_value))
+}
+
+print_top_nodes(deg, "DEGREE")
+print_top_nodes(pr, "PAGERANK")
+print_top_nodes(bet, "BETWEENNESS")
+print_top_nodes(pow, "POWER CENTRALITY")# STAMPA ORDINE DI RIMOZIONE PER OGNI METRICA
+
+
+attack_deg <- percolate(g_full, size, d = deg)
+
+attack_pr <- percolate(g_full, size, d = pr)
+
+attack_bet <- percolate(g_full, size, d = bet)
+```
+
+
+```{r}
+attack_power <- percolate(g_full, size, d = 1/pow)
+
+attack_dyn <- adaptive_betweenness_attack(g_full, size)
+
+```
+
+```{r, fig.width=12, fig.height=8}
+# VISUALIZZAZIONE
+
+plot(0:size, attack_deg, type = "l", col = 1, lwd = 2,
+     xlab = "Numero di nodi rimossi", 
+     ylab = "Dimensione componente connessa più grande",
+     main = "Robustezza della Rete Aerea agli Attacchi Mirati",
+     ylim = c(0, vcount(g_full)))
+
+lines(0:size, attack_pr, col = 2, lwd = 2)
+lines(0:size, attack_bet, col = 3, lwd = 2)
+lines(0:size, attack_dyn, col = 4, lwd = 2)
+lines(0:size, attack_power, col = 5, lwd = 2)
+
+# Linea di riferimento (metà nodi)
+abline(h = vcount(g_full)/2, lty = 2, col = "gray", lwd = 1.5)
+abline(v = size, lty = 2, col = "gray", lwd = 1.5)
+
+legend("topright", 
+       legend = c("Degree", "PageRank", "Betweenness (statico)", 
+                  "Betweenness (adattivo)", 
+                  "Power Centrality"), 
+       lty = 1, col = 1:5, lwd = 2, cex = 0.8,
+       bg = "white")
+
+grid()
+```
+
+### Comportamento Iniziale (0-20 nodi rimossi)
+
+**Tutte le strategie mostrano curve quasi sovrapposte** nelle prime rimozioni. Questo fenomeno rivela tre caratteristiche fondamentali della rete aerea USA:
+
+1. **Convergenza delle metriche sui mega-hub**: Gli aeroporti con i valori più alti di Degree, PageRank, Betweenness sono sostanzialmente gli stessi - Denver, Atlanta, Dallas, Chicago. Indipendentemente dalla metrica utilizzata, le prime rimozioni colpiscono questi hub principali.
+
+2. **Robustezza intrinseca della rete**: Anche rimuovendo i principali hub (primi 15-20 nodi), la componente gigante rimane quasi intatta grazie all'**alta ridondanza** del sistema. Esistono percorsi alternativi attraverso altri hub secondari che mantengono la connettività della rete.
+
+3. **Struttura scale-free**: Tipica delle reti di trasporto aereo, questa topologia è estremamente resistente agli attacchi mirati iniziali. La rete "assorbe" la perdita dei primi hub senza frammentarsi.
+
+### Divergenza delle Strategie (20-50 nodi rimossi)
+
+Dopo aver superato la **soglia critica** (~25-30 nodi rimossi, circa 35-40% della rete), le curve iniziano a divergere:
+
+**Betweenness Adattivo - La strategia più efficace**
+- Questa curva scende più rapidamente perché **ricalcola** la betweenness ad ogni passo
+- Identifica dinamicamente quali aeroporti sono diventati i nuovi "ponti critici" dopo ogni rimozione
+- È l'attacco teoricamente ottimale per frammentare una rete
+- Il crollo accelerato indica che colpisce sempre i collegamenti strategici rimanenti
+
+**Betweenness Statico - Efficace ma sub-ottimale**
+- Usa la betweenness calcolata all'inizio e non si aggiorna
+- Rimane efficace perché gli aeroporti con alta betweenness iniziale restano importanti
+- Tuttavia, dopo ~30 rimozioni, la topologia è cambiata e alcuni nodi "vitali" inizialmente non lo sono più
+- Per questo motivo è meno efficace del metodo adattivo
+
+**Power Centrality - Approccio bilanciato**
+- Combina grado e connessioni di qualità
+- **Curiosamente, rimuove aeroporti completamente diversi** rispetto a Betweenness/Degree all'inizio
+- Nonostante ciò, **l'impatto è identico** - questo conferma l'**alta ridondanza** della rete
+- Rimuovere l'hub X o l'hub Y ha lo stesso effetto finché ci sono percorsi alternativi
+- Diventa meno efficace dopo la soglia critica perché non identifica i ponti cruciali
+
+**PageRank e Degree - Meno efficaci**
+- Queste metriche si concentrano sulla "popolarità" o sul numero di connessioni
+- Non considerano il **ruolo strutturale** dei nodi come ponti
+- Possono rimuovere hub ben connessi che però hanno molti percorsi alternativi
+- Sono più lente nel frammentare la rete perché non colpiscono i colli di bottiglia
+
+
+### Conclusione
+
+L'analisi conferma che la rete aerea USA è una **rete scale-free robusta-ma-fragile**:
+- **Robusta** a guasti casuali o attacchi limitati (alta ridondanza iniziale)
+- **Fragile** se si supera una soglia critica di ~30-35% degli hub compromessi
+- I mega-hub (Denver, Atlanta, Dallas) sono **insostituibili** - rimuoverli sistematicamente con strategie adattive porta al rapido collasso della connettività nazionale
+
+
+
+
+
